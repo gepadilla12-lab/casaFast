@@ -1,0 +1,32 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "CasaFast Backend",
+			"type": "shell",
+			"command": "npm run dev",
+			"args": [],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "CasaFast Frontend",
+			"type": "shell",
+			"command": "Set-Location 'C:\\Users\\monts\\OneDrive\\Desktop\\casafast\\casafast'; npm run dev -- --host 127.0.0.1",
+			"args": [],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "CasaFast Backend Server",
+			"type": "shell",
+			"command": "Set-Location 'C:\\Users\\monts\\OneDrive\\Desktop\\casafast\\backend'; npm run dev",
+			"args": [],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}
