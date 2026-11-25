@@ -45,6 +45,8 @@ const Propiedad = sequelize.define('Propiedad', {
   tipoOperacion: { type: DataTypes.ENUM(...OPERATION_TYPES), allowNull: false, defaultValue: 'Venta' },
   estatus: { type: DataTypes.ENUM(...STATUSES), allowNull: false, defaultValue: 'Disponible' },
   publicada: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+  fotoPrincipal: { type: DataTypes.TEXT, allowNull: true },
+  tieneFotoPrincipal: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   recamaras: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0, validate: { min: 0 } },
   banos: { type: DataTypes.DECIMAL(3, 1), allowNull: false, defaultValue: 0 },
   metrosCuadrados: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
@@ -53,7 +55,7 @@ const Propiedad = sequelize.define('Propiedad', {
   cocheras: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
   visitas: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
   ofertas: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
-}, { tableName: 'Propiedads' });
+}, { tableName: 'Propiedads', defaultScope: { attributes: { exclude: ['fotoPrincipal'] } } });
 
 const Tramite = sequelize.define('Tramite', {
   id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
@@ -74,6 +76,8 @@ const Tramite = sequelize.define('Tramite', {
   comentariosDocumentacion: { type: DataTypes.STRING(1000), allowNull: true },
   fechaFirma: { type: DataTypes.DATEONLY, allowNull: true },
   horaFirma: { type: DataTypes.STRING(5), allowNull: true },
+  estadoFirma: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'Pendiente' },
+  fechaResultadoFirma: { type: DataTypes.DATEONLY, allowNull: true },
   notaria: { type: DataTypes.STRING(180), allowNull: true },
   progreso: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 20 },
   observacion: { type: DataTypes.STRING(300), allowNull: true },
@@ -132,6 +136,25 @@ const SolicitudVenta = sequelize.define('SolicitudVenta', {
   revisionAdministrativa: { type: DataTypes.STRING(60), allowNull: true },
 }, { tableName: 'SolicitudesVenta' });
 
+const ChatConversacion = sequelize.define('ChatConversacion', {
+  id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+  tipo: { type: DataTypes.ENUM('comprador', 'vendedor'), allowNull: false },
+  referencia: { type: DataTypes.STRING(80), allowNull: false },
+  clienteId: { type: DataTypes.INTEGER, allowNull: false },
+  asesorId: { type: DataTypes.INTEGER, allowNull: false },
+  propiedadCodigo: { type: DataTypes.STRING(24), allowNull: true },
+  solicitudVentaId: { type: DataTypes.INTEGER, allowNull: true },
+  titulo: { type: DataTypes.STRING(240), allowNull: false },
+}, {
+  tableName: 'ChatConversaciones',
+  indexes: [{ unique: true, fields: ['tipo', 'referencia', 'clienteId', 'asesorId'] }],
+});
+
+const ChatMensaje = sequelize.define('ChatMensaje', {
+  id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+  texto: { type: DataTypes.STRING(2000), allowNull: false },
+}, { tableName: 'ChatMensajes' });
+
 Propiedad.belongsTo(Usuario, { as: 'asesor', foreignKey: { name: 'asesorId', allowNull: true } });
 Propiedad.belongsTo(Usuario, { as: 'propietario', foreignKey: { name: 'propietarioId', allowNull: true } });
 Propiedad.belongsTo(Usuario, { as: 'comprador', foreignKey: { name: 'compradorId', allowNull: true } });
@@ -150,6 +173,11 @@ Propiedad.hasMany(Tramite, { as: 'tramites', foreignKey: 'propiedadCodigo' });
 SolicitudVenta.belongsTo(Usuario, { as: 'propietario', foreignKey: { name: 'propietarioId', allowNull: false } });
 SolicitudVenta.belongsTo(Usuario, { as: 'asesor', foreignKey: { name: 'asesorId', allowNull: true } });
 SolicitudVenta.belongsTo(Propiedad, { as: 'propiedad', foreignKey: { name: 'propiedadCodigo', allowNull: true } });
+ChatConversacion.belongsTo(Usuario, { as: 'cliente', foreignKey: 'clienteId' });
+ChatConversacion.belongsTo(Usuario, { as: 'asesor', foreignKey: 'asesorId' });
+ChatConversacion.hasMany(ChatMensaje, { as: 'mensajes', foreignKey: 'conversacionId' });
+ChatMensaje.belongsTo(ChatConversacion, { as: 'conversacion', foreignKey: 'conversacionId' });
+ChatMensaje.belongsTo(Usuario, { as: 'remitente', foreignKey: 'remitenteId' });
 
 function hashPassword(password, salt) {
   return crypto.scryptSync(password, salt, 64).toString('hex');
@@ -178,6 +206,58 @@ function allow(...roles) {
   return (req, res, next) => roles.includes(req.user.rol)
     ? next()
     : fail(res, 403, 'Tu perfil no tiene permiso para esta acción.');
+}
+
+async function ensureChatConversation({ tipo, referencia, clienteId, asesorId, propiedadCodigo = null, solicitudVentaId = null, titulo }) {
+  const [conversation, created] = await ChatConversacion.findOrCreate({
+    where: { tipo, referencia, clienteId, asesorId },
+    defaults: { tipo, referencia, clienteId, asesorId, propiedadCodigo, solicitudVentaId, titulo },
+  });
+  if (!created && (
+    conversation.titulo !== titulo ||
+    conversation.propiedadCodigo !== propiedadCodigo ||
+    conversation.solicitudVentaId !== solicitudVentaId
+  )) {
+    await conversation.update({ titulo, propiedadCodigo, solicitudVentaId });
+  }
+  return conversation;
+}
+
+async function canAccessChatConversation(conversation, user) {
+  if (!conversation || !['comprador', 'propietario', 'asesor'].includes(user.rol)) return false;
+  if (user.id !== conversation.clienteId && user.id !== conversation.asesorId) return false;
+
+  if (conversation.tipo === 'vendedor') {
+    return Boolean(await SolicitudVenta.findOne({
+      where: {
+        id: conversation.solicitudVentaId,
+        propietarioId: conversation.clienteId,
+        asesorId: conversation.asesorId,
+      },
+      attributes: ['id'],
+    }));
+  }
+
+  const [property, visit, reservation] = await Promise.all([
+    Propiedad.findByPk(conversation.propiedadCodigo, { attributes: ['codigo', 'asesorId'] }),
+    VisitaPropiedad.findOne({
+      where: { clienteId: conversation.clienteId, propiedadCodigo: conversation.propiedadCodigo },
+      attributes: ['id'],
+    }),
+    Tramite.findOne({
+      where: {
+        compradorId: conversation.clienteId,
+        propiedadCodigo: conversation.propiedadCodigo,
+        asesorId: conversation.asesorId,
+      },
+      attributes: ['id'],
+    }),
+  ]);
+  return Boolean(property && (
+    (property.asesorId === conversation.asesorId && visit) ||
+    (property.asesorId === conversation.asesorId && reservation) ||
+    reservation
+  ));
 }
 
 const propertyIncludes = [
@@ -236,6 +316,50 @@ function validBuyerDocuments(documents) {
   return totalBytes <= 20_000_000;
 }
 
+function canAdvisorRecordFinancing(tramite, asesorId) {
+  return tramite.asesorId === asesorId &&
+    tramite.estado === 'Aprobado' &&
+    CREDIT_METHODS.includes(tramite.metodoPago) &&
+    tramite.estadoDocumentacion === 'Aprobado' &&
+    tramite.estadoFinanciamiento === 'Pendiente';
+}
+
+function canAdvisorScheduleSigning(tramite, asesorId) {
+  const financingResolved = tramite.metodoPago === 'Contado'
+    ? tramite.estadoFinanciamiento === 'No requerido'
+    : CREDIT_METHODS.includes(tramite.metodoPago) && tramite.estadoFinanciamiento === 'Aprobado';
+  return tramite.asesorId === asesorId &&
+    tramite.estado === 'Aprobado' &&
+    tramite.estadoDocumentacion === 'Aprobado' &&
+    financingResolved;
+}
+
+function canAdvisorRecordSigningOutcome(tramite, asesorId) {
+  return canAdvisorScheduleSigning(tramite, asesorId) &&
+    validDateOnly(tramite.fechaFirma) &&
+    tramite.estadoFirma !== 'Firmada';
+}
+
+function validDateOnly(date) {
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const [year, month, day] = date.split('-').map(Number);
+  const normalizedDate = new Date(Date.UTC(year, month - 1, day));
+  return normalizedDate.getUTCFullYear() === year &&
+    normalizedDate.getUTCMonth() === month - 1 &&
+    normalizedDate.getUTCDate() === day;
+}
+
+function validSigningOutcomeDate(date, scheduledDate) {
+  if (!validDateOnly(date) || (scheduledDate && (!validDateOnly(scheduledDate) || date < scheduledDate))) return false;
+  const today = new Date();
+  const todayDate = [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, '0'),
+    String(today.getDate()).padStart(2, '0'),
+  ].join('-');
+  return date <= todayDate;
+}
+
 function validFutureAppointment(date, time) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) return false;
   const [year, month, day] = date.split('-').map(Number);
@@ -252,7 +376,8 @@ function validFutureAppointment(date, time) {
 }
 
 function validUploadedFile(file, acceptedTypes, maxBytes) {
-  if (!file || typeof file.name !== 'string' || !file.name.trim() || file.name.length > 180) return false;
+  const name = file?.name ?? file?.nombre;
+  if (typeof name !== 'string' || !name.trim() || name.length > 180) return false;
   if (typeof file.data !== 'string') return false;
   const match = file.data.match(/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+);base64,/i);
   if (!match || !acceptedTypes.includes(match[1].toLowerCase())) return false;
@@ -385,6 +510,209 @@ app.post('/api/login', async (req, res) => {
 
 app.get('/api/me', authenticate, (req, res) => res.json({ usuario: publicUser(req.user) }));
 
+app.get('/api/chat/conversaciones', authenticate, allow('comprador', 'propietario', 'asesor'), async (req, res) => {
+  const conversations = new Map();
+  const addConversation = async (data) => {
+    const conversation = await ensureChatConversation(data);
+    conversations.set(conversation.id, conversation);
+  };
+
+  if (['comprador', 'propietario'].includes(req.user.rol)) {
+    const saleRequests = await SolicitudVenta.findAll({
+      where: { propietarioId: req.user.id, asesorId: { [Op.ne]: null } },
+      include: [{ model: Propiedad, as: 'propiedad', attributes: ['codigo', 'titulo'] }],
+    });
+    for (const requestItem of saleRequests) {
+      await addConversation({
+        tipo: 'vendedor',
+        referencia: `solicitud:${requestItem.id}`,
+        clienteId: requestItem.propietarioId,
+        asesorId: requestItem.asesorId,
+        propiedadCodigo: requestItem.propiedadCodigo,
+        solicitudVentaId: requestItem.id,
+        titulo: requestItem.propiedad?.titulo || `${requestItem.direccion}, ${requestItem.zona}`,
+      });
+    }
+
+    const visits = await VisitaPropiedad.findAll({
+      where: { clienteId: req.user.id },
+      include: [{
+        model: Propiedad,
+        as: 'propiedad',
+        required: true,
+        where: { asesorId: { [Op.ne]: null } },
+        attributes: ['codigo', 'titulo', 'asesorId'],
+      }],
+    });
+    for (const visit of visits) {
+      await addConversation({
+        tipo: 'comprador',
+        referencia: `propiedad:${visit.propiedad.codigo}`,
+        clienteId: req.user.id,
+        asesorId: visit.propiedad.asesorId,
+        propiedadCodigo: visit.propiedad.codigo,
+        titulo: visit.propiedad.titulo,
+      });
+    }
+
+    const reservations = await Tramite.findAll({
+      where: { compradorId: req.user.id },
+      include: [{ model: Propiedad, as: 'propiedad', attributes: ['codigo', 'titulo', 'asesorId'] }],
+    });
+    for (const reservation of reservations) {
+      const advisorId = reservation.asesorId || reservation.propiedad?.asesorId;
+      if (!advisorId || !reservation.propiedad) continue;
+      await addConversation({
+        tipo: 'comprador',
+        referencia: `propiedad:${reservation.propiedadCodigo}`,
+        clienteId: req.user.id,
+        asesorId: advisorId,
+        propiedadCodigo: reservation.propiedadCodigo,
+        titulo: reservation.propiedad.titulo,
+      });
+    }
+  } else {
+    const saleRequests = await SolicitudVenta.findAll({
+      where: { asesorId: req.user.id },
+      include: [{ model: Propiedad, as: 'propiedad', attributes: ['codigo', 'titulo'] }],
+    });
+    for (const requestItem of saleRequests) {
+      await addConversation({
+        tipo: 'vendedor',
+        referencia: `solicitud:${requestItem.id}`,
+        clienteId: requestItem.propietarioId,
+        asesorId: req.user.id,
+        propiedadCodigo: requestItem.propiedadCodigo,
+        solicitudVentaId: requestItem.id,
+        titulo: requestItem.propiedad?.titulo || `${requestItem.direccion}, ${requestItem.zona}`,
+      });
+    }
+
+    const visits = await VisitaPropiedad.findAll({
+      include: [
+        { model: Usuario, as: 'cliente', attributes: ['id'] },
+        {
+          model: Propiedad,
+          as: 'propiedad',
+          required: true,
+          where: { asesorId: req.user.id },
+          attributes: ['codigo', 'titulo'],
+        },
+      ],
+    });
+    for (const visit of visits) {
+      await addConversation({
+        tipo: 'comprador',
+        referencia: `propiedad:${visit.propiedad.codigo}`,
+        clienteId: visit.clienteId,
+        asesorId: req.user.id,
+        propiedadCodigo: visit.propiedad.codigo,
+        titulo: visit.propiedad.titulo,
+      });
+    }
+
+    const reservations = await Tramite.findAll({
+      where: { asesorId: req.user.id },
+      include: [
+        { model: Usuario, as: 'comprador', attributes: ['id'] },
+        { model: Propiedad, as: 'propiedad', attributes: ['codigo', 'titulo'] },
+      ],
+    });
+    for (const reservation of reservations) {
+      await addConversation({
+        tipo: 'comprador',
+        referencia: `propiedad:${reservation.propiedadCodigo}`,
+        clienteId: reservation.compradorId,
+        asesorId: req.user.id,
+        propiedadCodigo: reservation.propiedadCodigo,
+        titulo: reservation.propiedad.titulo,
+      });
+    }
+  }
+
+  const ids = [...conversations.keys()];
+  if (!ids.length) return res.json([]);
+  const [savedConversations, latestMessageIds] = await Promise.all([
+    ChatConversacion.findAll({
+      where: { id: { [Op.in]: ids } },
+      include: [
+        { model: Usuario, as: 'cliente', attributes: ['id', 'nombre'] },
+        { model: Usuario, as: 'asesor', attributes: ['id', 'nombre'] },
+      ],
+    }),
+    ChatMensaje.findAll({
+      attributes: [[sequelize.fn('MAX', sequelize.col('id')), 'id']],
+      where: { conversacionId: { [Op.in]: ids } },
+      group: ['conversacionId'],
+      raw: true,
+    }),
+  ]);
+  const messages = latestMessageIds.length
+    ? await ChatMensaje.findAll({ where: { id: { [Op.in]: latestMessageIds.map((message) => message.id) } } })
+    : [];
+  const latestMessages = new Map();
+  for (const message of messages) {
+    if (!latestMessages.has(message.conversacionId)) latestMessages.set(message.conversacionId, message);
+  }
+  const result = savedConversations.map((conversation) => {
+    const lastMessage = latestMessages.get(conversation.id);
+    return {
+      id: conversation.id,
+      tipo: conversation.tipo,
+      titulo: conversation.titulo,
+      cliente: conversation.cliente,
+      asesor: conversation.asesor,
+      ultimoMensaje: lastMessage ? {
+        texto: lastMessage.texto,
+        remitenteId: lastMessage.remitenteId,
+        createdAt: lastMessage.createdAt,
+      } : null,
+      updatedAt: lastMessage?.createdAt || conversation.updatedAt,
+    };
+  });
+  result.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  return res.json(result);
+});
+
+app.get('/api/chat/conversaciones/:id/mensajes', authenticate, allow('comprador', 'propietario', 'asesor'), async (req, res) => {
+  const conversation = await ChatConversacion.findByPk(req.params.id);
+  if (!await canAccessChatConversation(conversation, req.user)) return fail(res, 404, 'No se encontró la conversación.');
+  const messages = await ChatMensaje.findAll({
+    where: { conversacionId: conversation.id },
+    include: [{ model: Usuario, as: 'remitente', attributes: ['id', 'nombre'] }],
+    order: [['createdAt', 'DESC'], ['id', 'DESC']],
+    limit: 100,
+  });
+  return res.json(messages.reverse().map((message) => ({
+    id: message.id,
+    texto: message.texto,
+    remitenteId: message.remitenteId,
+    remitenteNombre: message.remitente.nombre,
+    createdAt: message.createdAt,
+  })));
+});
+
+app.post('/api/chat/conversaciones/:id/mensajes', authenticate, allow('comprador', 'propietario', 'asesor'), async (req, res) => {
+  const texto = req.body?.texto;
+  if (typeof texto !== 'string' || !texto.trim() || texto.trim().length > 2000) {
+    return fail(res, 400, 'Escribe un mensaje de hasta 2000 caracteres.');
+  }
+  const conversation = await ChatConversacion.findByPk(req.params.id);
+  if (!await canAccessChatConversation(conversation, req.user)) return fail(res, 404, 'No se encontró la conversación.');
+  const message = await ChatMensaje.create({
+    conversacionId: conversation.id,
+    remitenteId: req.user.id,
+    texto: texto.trim(),
+  });
+  return res.status(201).json({
+    id: message.id,
+    texto: message.texto,
+    remitenteId: req.user.id,
+    remitenteNombre: req.user.nombre,
+    createdAt: message.createdAt,
+  });
+});
+
 app.post('/api/logout', authenticate, (req, res) => {
   const token = req.get('authorization').replace(/^Bearer\s+/i, '');
   tokens.delete(token);
@@ -403,6 +731,18 @@ app.get('/api/propiedades', async (req, res) => {
   }
   const propiedades = await Propiedad.findAll({ where, include: propertyIncludes, order: [['createdAt', 'DESC']] });
   res.json(propiedades);
+});
+
+app.get('/api/propiedades/:codigo/foto-principal', async (req, res) => {
+  const propiedad = await Propiedad.unscoped().findByPk(req.params.codigo, {
+    attributes: ['codigo', 'publicada', 'fotoPrincipal'],
+  });
+  if (!propiedad?.publicada || !propiedad.fotoPrincipal) return fail(res, 404, 'No se encontró la fotografía principal.');
+  const match = propiedad.fotoPrincipal.match(/^data:(image\/(?:jpeg|png|webp));base64,/i);
+  const image = decodeBase64DataUrl(propiedad.fotoPrincipal);
+  if (!match || !image) return fail(res, 500, 'No se pudo leer la fotografía principal.');
+  res.set('Cache-Control', 'public, max-age=3600');
+  return res.type(match[1]).send(image);
 });
 
 app.get('/api/propiedades/:codigo', authenticate, async (req, res) => {
@@ -800,6 +1140,8 @@ app.put('/api/solicitudes-venta/:id/inspeccion', authenticate, allow('asesor'), 
         cocheras: Number(cocheras),
         estatus: 'Disponible',
         publicada: false,
+        fotoPrincipal: galeria[0].data,
+        tieneFotoPrincipal: true,
         asesorId: req.user.id,
         propietarioId: solicitud.propietarioId,
       }, { transaction });
@@ -853,10 +1195,14 @@ app.get('/api/solicitudes-venta/:id/archivos', authenticate, async (req, res) =>
   });
 });
 
-app.get('/api/tramites', authenticate, allow('comprador', 'propietario', 'asesor', 'gerente'), async (req, res) => {
+app.get('/api/tramites', authenticate, allow('comprador', 'propietario', 'asesor', 'gerente', 'responsable_legal'), async (req, res) => {
   const where = {};
   if (['comprador', 'propietario'].includes(req.user.rol)) where.compradorId = req.user.id;
   if (req.user.rol === 'asesor') where.asesorId = req.user.id;
+  if (req.user.rol === 'responsable_legal') {
+    where.estado = 'Aprobado';
+    where.estadoDocumentacion = 'En Revisión';
+  }
   if (req.query.estado) where.estado = String(req.query.estado);
   const tramites = await Tramite.findAll({
     where,
@@ -871,14 +1217,23 @@ app.get('/api/tramites', authenticate, allow('comprador', 'propietario', 'asesor
             'correoComprador',
             'telefonoComprador',
             'propuestaEconomica',
+            'documentosCompradorResumen',
+            'comentariosDocumentacion',
+          ]
+          : []),
+        ...(req.user.rol === 'responsable_legal'
+          ? [
+            'correoComprador',
+            'telefonoComprador',
+            'propuestaEconomica',
+            'esquemaPago',
             'metodoPago',
             'estadoFinanciamiento',
-            'documentosCompradorResumen',
-            'estadoDocumentacion',
-            'comentariosDocumentacion',
             'fechaFirma',
             'horaFirma',
             'notaria',
+            'estadoFirma',
+            'fechaResultadoFirma',
           ]
           : []),
       ],
@@ -986,15 +1341,18 @@ app.put('/api/tramites/:id/documentos', authenticate, allow('comprador', 'propie
 });
 
 app.get('/api/tramites/:id/documentos', authenticate, async (req, res) => {
-  if (!['comprador', 'propietario', 'gerente'].includes(req.user.rol)) return fail(res, 403, 'Tu perfil no tiene permiso para consultar estos documentos.');
+  if (!['comprador', 'propietario', 'responsable_legal'].includes(req.user.rol)) return fail(res, 403, 'Tu perfil no tiene permiso para consultar estos documentos.');
   const where = { id: req.params.id };
   if (['comprador', 'propietario'].includes(req.user.rol)) where.compradorId = req.user.id;
   const tramite = await Tramite.findOne({ where });
   if (!tramite) return fail(res, 404, 'No se encontró el apartado.');
+  if (req.user.rol === 'responsable_legal' && tramite.estadoDocumentacion !== 'En Revisión') {
+    return fail(res, 404, 'No se encontró documentación pendiente de revisión.');
+  }
   return res.json({ documentos: JSON.parse(tramite.documentosComprador || '[]') });
 });
 
-app.put('/api/tramites/:id/documentos/revision', authenticate, allow('gerente'), async (req, res) => {
+app.put('/api/tramites/:id/documentos/revision', authenticate, allow('responsable_legal'), async (req, res) => {
   const { decision, comentarios } = req.body || {};
   if (!['Aprobado', 'Observado'].includes(decision) ||
     (comentarios != null && (typeof comentarios !== 'string' || comentarios.length > 1000)) ||
@@ -1016,13 +1374,13 @@ app.put('/api/tramites/:id/documentos/revision', authenticate, allow('gerente'),
   return res.json({ ok: true });
 });
 
-app.put('/api/tramites/:id/financiamiento', authenticate, allow('gerente'), async (req, res) => {
+app.put('/api/tramites/:id/financiamiento', authenticate, allow('asesor'), async (req, res) => {
   const { estadoFinanciamiento } = req.body || {};
   if (!['Aprobado', 'Rechazado'].includes(estadoFinanciamiento)) return fail(res, 400, 'Indica si la institución aprobó o rechazó el financiamiento.');
   const tramite = await Tramite.findByPk(req.params.id);
-  if (!tramite) return fail(res, 404, 'No se encontró el apartado.');
-  if (tramite.estado !== 'Aprobado' || !CREDIT_METHODS.includes(tramite.metodoPago) || tramite.estadoDocumentacion !== 'Aprobado') {
-    return fail(res, 409, 'La documentación debe estar aprobada y el método de pago debe ser un crédito.');
+  if (!tramite || tramite.asesorId !== req.user.id) return fail(res, 404, 'No se encontró el apartado asignado.');
+  if (!canAdvisorRecordFinancing(tramite, req.user.id)) {
+    return fail(res, 409, 'El apartado debe tener documentos aprobados y un financiamiento pendiente.');
   }
   await tramite.update({
     estadoFinanciamiento,
@@ -1031,7 +1389,7 @@ app.put('/api/tramites/:id/financiamiento', authenticate, allow('gerente'), asyn
   return res.json({ ok: true });
 });
 
-app.put('/api/tramites/:id/firma', authenticate, allow('gerente'), async (req, res) => {
+app.put('/api/tramites/:id/firma', authenticate, allow('asesor'), async (req, res) => {
   const { notaria, fechaFirma, horaFirma } = req.body || {};
   if (typeof notaria !== 'string' || !notaria.trim() || notaria.trim().length > 180 ||
     typeof fechaFirma !== 'string' || typeof horaFirma !== 'string' ||
@@ -1039,16 +1397,37 @@ app.put('/api/tramites/:id/firma', authenticate, allow('gerente'), async (req, r
     return fail(res, 400, 'Indica una notaría y una fecha y hora futuras válidas para la firma.');
   }
   const tramite = await Tramite.findByPk(req.params.id);
-  if (!tramite) return fail(res, 404, 'No se encontró el apartado.');
-  const financingResolved = tramite.metodoPago === 'Contado'
-    ? tramite.estadoFinanciamiento === 'No requerido'
-    : CREDIT_METHODS.includes(tramite.metodoPago) && tramite.estadoFinanciamiento === 'Aprobado';
-  if (tramite.estado !== 'Aprobado' || tramite.estadoDocumentacion !== 'Aprobado' ||
-    !financingResolved) {
+  if (!tramite || tramite.asesorId !== req.user.id) return fail(res, 404, 'No se encontró el apartado asignado.');
+  if (tramite.estadoFirma === 'Firmada') return fail(res, 409, 'La firma ya fue registrada como realizada.');
+  if (!canAdvisorScheduleSigning(tramite, req.user.id)) {
     return fail(res, 409, 'La documentación y el financiamiento deben estar aprobados antes de programar la firma.');
   }
-  await tramite.update({ notaria: notaria.trim(), fechaFirma, horaFirma, progreso: 100 });
+  await tramite.update({
+    notaria: notaria.trim(),
+    fechaFirma,
+    horaFirma,
+    progreso: Math.max(Number(tramite.progreso) || 0, 90),
+  });
   return res.json({ ok: true });
+});
+
+app.put('/api/tramites/:id/resultado-firma', authenticate, allow('asesor'), async (req, res) => {
+  const { estadoFirma, fechaResultadoFirma } = req.body || {};
+  if (!['Firmada', 'No realizada'].includes(estadoFirma) || !validSigningOutcomeDate(fechaResultadoFirma)) {
+    return fail(res, 400, 'Indica si la firma se realizó y registra una fecha válida que no sea futura.');
+  }
+  const tramite = await Tramite.findByPk(req.params.id);
+  if (!tramite || tramite.asesorId !== req.user.id) return fail(res, 404, 'No se encontró el apartado asignado.');
+  if (!canAdvisorRecordSigningOutcome(tramite, req.user.id) ||
+    !validSigningOutcomeDate(fechaResultadoFirma, tramite.fechaFirma)) {
+    return fail(res, 409, 'Solo puedes registrar el resultado después de la cita de firma programada.');
+  }
+  await tramite.update({
+    estadoFirma,
+    fechaResultadoFirma,
+    progreso: estadoFirma === 'Firmada' ? 100 : 90,
+  });
+  return res.json({ ok: true, estadoFirma, fechaResultadoFirma });
 });
 
 app.put('/api/propiedades/:codigo', authenticate, async (req, res) => {
@@ -1166,12 +1545,42 @@ async function ensurePropertyColumns() {
     ofertas: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     tipoOperacion: { type: DataTypes.ENUM(...OPERATION_TYPES), allowNull: false, defaultValue: 'Venta' },
     publicada: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+    fotoPrincipal: { type: DataTypes.TEXT, allowNull: true },
+    tieneFotoPrincipal: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     asesorId: { type: DataTypes.INTEGER, allowNull: true },
     propietarioId: { type: DataTypes.INTEGER, allowNull: true },
     compradorId: { type: DataTypes.INTEGER, allowNull: true },
   };
   for (const [name, definition] of Object.entries(missingColumns)) {
     if (!columns[name]) await sequelize.getQueryInterface().addColumn('Propiedads', name, definition);
+  }
+}
+
+async function backfillPropertyMainPhotos() {
+  const propertiesWithoutPhoto = await Propiedad.unscoped().findAll({
+    where: { fotoPrincipal: null },
+    attributes: ['codigo'],
+  });
+  if (!propertiesWithoutPhoto.length) return;
+  const propertyCodes = propertiesWithoutPhoto.map((property) => property.codigo);
+  const requests = await SolicitudVenta.findAll({
+    where: {
+      propiedadCodigo: { [Op.in]: propertyCodes },
+      estado: 'Inspección completada',
+    },
+    attributes: ['propiedadCodigo', 'galeriaDatos'],
+    order: [['createdAt', 'DESC']],
+  });
+  const updatedProperties = new Set();
+  for (const requestItem of requests) {
+    if (updatedProperties.has(requestItem.propiedadCodigo)) continue;
+    const firstPhoto = JSON.parse(requestItem.galeriaDatos || '[]')[0];
+    if (typeof firstPhoto !== 'string') continue;
+    await Propiedad.unscoped().update({
+      fotoPrincipal: firstPhoto,
+      tieneFotoPrincipal: true,
+    }, { where: { codigo: requestItem.propiedadCodigo, fotoPrincipal: null } });
+    updatedProperties.add(requestItem.propiedadCodigo);
   }
 }
 
@@ -1191,10 +1600,20 @@ async function ensureReservationColumns() {
     comentariosDocumentacion: { type: DataTypes.STRING(1000), allowNull: true },
     fechaFirma: { type: DataTypes.DATEONLY, allowNull: true },
     horaFirma: { type: DataTypes.STRING(5), allowNull: true },
+    estadoFirma: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'Pendiente' },
+    fechaResultadoFirma: { type: DataTypes.DATEONLY, allowNull: true },
   };
   for (const [name, definition] of Object.entries(missingColumns)) {
     if (!columns[name]) await sequelize.getQueryInterface().addColumn('Apartados', name, definition);
   }
+  await Tramite.update({ estadoFirma: 'Pendiente' }, { where: { estadoFirma: null } });
+  await Tramite.update({ progreso: 90 }, {
+    where: {
+      fechaFirma: { [Op.ne]: null },
+      estadoFirma: 'Pendiente',
+      progreso: 100,
+    },
+  });
 }
 
 async function ensureSaleRequestColumns() {
@@ -1235,10 +1654,19 @@ async function start() {
     await ensurePropertyColumns();
     await ensureReservationColumns();
     await ensureSaleRequestColumns();
+    await backfillPropertyMainPhotos();
     await ensurePropertyVisitColumns();
     await seedData();
     await ensureLegalExpedientes();
-    app.listen(PORT, () => console.log(`CASAFAST API disponible en http://localhost:${PORT}`));
+    const frontendDist = path.join(__dirname, '..', 'casafast', 'dist');
+    app.use(express.static(frontendDist));
+    app.use((req, res, next) => {
+      if (req.method === 'GET' && req.accepts('html')) {
+        return res.sendFile(path.join(frontendDist, 'index.html'));
+      }
+      return next();
+    });
+    app.listen(PORT, '0.0.0.0', () => console.log(`CASAFAST disponible en http://localhost:${PORT}`));
   } catch (error) {
     console.error('No fue posible iniciar CASAFAST:', error);
     process.exitCode = 1;
@@ -1247,4 +1675,13 @@ async function start() {
 
 if (require.main === module) start();
 
-module.exports = { app, sequelize, start };
+module.exports = {
+  app,
+  sequelize,
+  start,
+  validBuyerDocuments,
+  canAdvisorRecordFinancing,
+  canAdvisorScheduleSigning,
+  canAdvisorRecordSigningOutcome,
+  validSigningOutcomeDate,
+};

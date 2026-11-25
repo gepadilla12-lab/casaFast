@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, ArrowRight, BadgeCheck, BedDouble, Building2, CheckCircle2,
   CalendarDays, Clock3, FileCheck2, FileText, House, LayoutDashboard, LogOut, MapPin,
-  Search, ShieldCheck, SlidersHorizontal, UserRound, Wallet, X, Bath, Ruler,
+  MessageCircle, Search, Send, ShieldCheck, SlidersHorizontal, UserRound, Wallet, X, Bath, Ruler,
   UploadCloud, Eye, ChartNoAxesCombined, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 
@@ -133,9 +133,13 @@ function Stat({ icon: Icon, label, value, note, color = 'cyan' }) {
 function PropertyCard({ property, onReserve, onDetails, onSchedule, reserveDisabled }) {
   return (
     <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg">
-      <div className="property-art relative flex h-44 items-end p-4">
-        <span className="absolute left-4 top-4 flex items-center gap-2"><StatusBadge status={property.estatus} /><span className="rounded-full bg-white/90 px-2.5 py-1 text-[10px] font-bold text-slate-700">{property.tipoOperacion === 'Renta' ? 'RENTA' : 'VENTA'}</span></span>
-        <span className="absolute right-4 top-4 rounded-lg bg-white/90 px-2.5 py-1 text-[10px] font-bold text-slate-700">{property.codigo}</span>
+      <div className={`relative flex h-44 items-end overflow-hidden p-4 ${property.tieneFotoPrincipal ? 'bg-slate-100' : 'property-art'}`}>
+        {property.tieneFotoPrincipal && <>
+          <img src={`/api/propiedades/${encodeURIComponent(property.codigo)}/foto-principal`} alt={property.titulo} loading="lazy" className="absolute inset-0 h-full w-full object-cover" />
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/50 via-transparent to-slate-950/10" />
+        </>}
+        <span className="absolute left-4 top-4 z-10 flex items-center gap-2"><StatusBadge status={property.estatus} /><span className="rounded-full bg-white/90 px-2.5 py-1 text-[10px] font-bold text-slate-700">{property.tipoOperacion === 'Renta' ? 'RENTA' : 'VENTA'}</span></span>
+        <span className="absolute right-4 top-4 z-10 rounded-lg bg-white/90 px-2.5 py-1 text-[10px] font-bold text-slate-700">{property.codigo}</span>
         <div className="relative z-10 rounded-xl bg-slate-950/70 px-3 py-2 text-white backdrop-blur"><div className="text-lg font-black">{money(property.precio)}{property.tipoOperacion === 'Renta' && <span className="ml-1 text-[10px] font-semibold">/ mes</span>}</div><div className="text-[10px] text-slate-200">{property.zona}</div></div>
       </div>
       <div className="p-5">
@@ -158,6 +162,42 @@ function PropertyCard({ property, onReserve, onDetails, onSchedule, reserveDisab
 
 function Modal({ title, onClose, children, wide = false, subtitle = 'Completa los datos para continuar.' }) {
   return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/55 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section role="dialog" aria-modal="true" aria-label={title} className={`max-h-[92vh] w-full ${wide ? 'max-w-5xl' : 'max-w-xl'} overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl sm:p-8`}><div className="mb-6 flex items-start justify-between gap-4"><div><h2 className="text-xl font-black text-slate-950">{title}</h2><p className="mt-1 text-xs text-slate-500">{subtitle}</p></div><button onClick={onClose} aria-label="Cerrar" className="rounded-xl bg-slate-100 p-2 text-slate-600 hover:bg-slate-200"><X size={18} /></button></div>{children}</section></div>;
+}
+
+function DocumentPreviewModal({ file, onClose }) {
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let objectUrl;
+    try {
+      const [metadata, encodedData] = file.data.split(',', 2);
+      const mimeType = metadata.match(/^data:([^;]+);base64$/i)?.[1];
+      if (!mimeType || !encodedData) throw new Error('El documento no tiene un formato que se pueda mostrar.');
+      const decoded = window.atob(encodedData);
+      const bytes = Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+      objectUrl = window.URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+      setPreview({ mimeType, objectUrl });
+    } catch (previewError) {
+      setError(previewError.message || 'No se pudo mostrar el documento.');
+    }
+
+    return () => {
+      if (objectUrl) window.URL.revokeObjectURL(objectUrl);
+    };
+  }, [file]);
+
+  return <Modal title="Vista previa del documento" subtitle={file.nombre} onClose={onClose} wide>
+    {error
+      ? <p role="alert" className="rounded-xl bg-rose-50 p-4 text-sm text-rose-700">{error}</p>
+      : !preview
+        ? <p className="py-12 text-center text-sm text-slate-500">Preparando documento…</p>
+        : preview.mimeType === 'application/pdf'
+          ? <iframe title={file.nombre} src={preview.objectUrl} className="h-[70vh] w-full rounded-xl border border-slate-200" />
+          : ['image/jpeg', 'image/png'].includes(preview.mimeType)
+            ? <img src={preview.objectUrl} alt={file.nombre} className="mx-auto max-h-[70vh] max-w-full rounded-xl object-contain" />
+            : <p role="alert" className="rounded-xl bg-rose-50 p-4 text-sm text-rose-700">Este tipo de archivo no se puede mostrar en CASAFAST.</p>}
+  </Modal>;
 }
 
 function PropertyDetailModal({ property, loading, canAct, onClose, onSchedule, onReserve }) {
@@ -364,50 +404,100 @@ function BuyerPurchaseActions({ tramite, onChoosePayment, onUploadDocuments, onV
       {['Pendiente', 'Observado'].includes(tramite.estadoDocumentacion) && <div><h4 className="text-sm font-bold text-slate-900">Integra tu expediente</h4><p className="mt-1 text-xs text-slate-500">Sube una identificación oficial y uno o más documentos financieros. La revisión se registra en el sistema.</p><BuyerDocumentsForm onSubmit={(items) => onUploadDocuments(tramite.id, items)} busy={busy} /></div>}
     </>}
     {tramite.fechaFirma && <p className="rounded-xl bg-emerald-50 p-3 text-xs leading-5 text-emerald-900">Firma programada en <b>{tramite.notaria}</b> el <b>{new Date(`${tramite.fechaFirma}T00:00:00`).toLocaleDateString('es-MX')}</b> a las <b>{tramite.horaFirma}</b>.</p>}
+    {tramite.estadoFirma === 'Firmada' && <p className="rounded-xl bg-emerald-50 p-3 text-xs text-emerald-900">El asesor confirmó que la firma se realizó el <b>{new Date(`${tramite.fechaResultadoFirma}T00:00:00`).toLocaleDateString('es-MX')}</b>.</p>}
+    {tramite.estadoFirma === 'No realizada' && <p className="rounded-xl bg-amber-50 p-3 text-xs text-amber-900">El asesor registró que la firma no se realizó el <b>{new Date(`${tramite.fechaResultadoFirma}T00:00:00`).toLocaleDateString('es-MX')}</b>.</p>}
   </div>;
 }
 
-function ManagerPurchaseCard({ tramite, onViewDocuments, onReviewDocuments, onReviewFinancing, onScheduleSigning, busy }) {
-  const [comments, setComments] = useState('');
+function AdvisorSigningCard({ tramite, onScheduleSigning, onRecordSigningOutcome, busy }) {
   const [notaria, setNotaria] = useState(tramite.notaria || '');
   const [fechaFirma, setFechaFirma] = useState(tramite.fechaFirma || '');
   const [horaFirma, setHoraFirma] = useState(tramite.horaFirma || '');
-  const docs = tramite.documentosComprador || [];
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+  const [resultadoFirma, setResultadoFirma] = useState('');
+  const [fechaResultadoFirma, setFechaResultadoFirma] = useState(today);
   const financingResolved = tramite.metodoPago === 'Contado'
     ? tramite.estadoFinanciamiento === 'No requerido'
     : CREDIT_PURCHASE_METHODS.includes(tramite.metodoPago) && tramite.estadoFinanciamiento === 'Aprobado';
-  const canSchedule = tramite.estadoDocumentacion === 'Aprobado' && financingResolved;
-  const reviewDocuments = (decision) => onReviewDocuments(tramite.id, { decision, comentarios: comments });
+  const canSchedule = tramite.estado === 'Aprobado' && tramite.estadoDocumentacion === 'Aprobado' && financingResolved;
+  const signatureState = tramite.estadoFirma || 'Pendiente';
+  const appointmentPassed = tramite.fechaFirma && tramite.fechaFirma <= today;
   return <article className="rounded-xl border border-slate-200 p-4">
-    <div className="flex flex-wrap items-start justify-between gap-2"><div><h4 className="font-bold">{tramite.propiedad?.titulo}</h4><p className="mt-1 text-xs text-slate-500">{tramite.nombreComprador || tramite.comprador?.nombre} · {tramite.metodoPago || 'Pendiente de método de pago'} · Propuesta {tramite.propuestaEconomica ? money(tramite.propuestaEconomica) : '—'}</p></div><StatusBadge status={tramite.estadoDocumentacion} /></div>
-    <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2"><span>Documentación: <b>{tramite.estadoDocumentacion}</b> ({docs.length} archivos)</span><span>Financiamiento: <b>{tramite.estadoFinanciamiento}</b></span></div>
-    {docs.length > 0 && <button onClick={() => onViewDocuments(tramite.id)} className="mt-3 text-xs font-bold text-cyan-800 hover:underline">Revisar identificación y documentos financieros</button>}
-    {tramite.estadoDocumentacion === 'En Revisión' && <div className="mt-3 space-y-2"><textarea className="form-input" placeholder="Comentarios para el comprador (obligatorios si observas)" maxLength="1000" rows="2" value={comments} onChange={(event) => setComments(event.target.value)} /><div className="flex flex-wrap gap-2"><button disabled={busy} onClick={() => reviewDocuments('Observado')} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700 disabled:opacity-50">Observar documentos</button><button disabled={busy} onClick={() => reviewDocuments('Aprobado')} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">Aprobar documentos</button></div></div>}
-    {CREDIT_PURCHASE_METHODS.includes(tramite.metodoPago) && tramite.estadoDocumentacion === 'Aprobado' && tramite.estadoFinanciamiento === 'Pendiente' && <div className="mt-3 rounded-xl bg-cyan-50 p-3"><p className="text-xs text-cyan-950">Registra la respuesta recibida de {tramite.metodoPago}; la decisión no se envía automáticamente a la institución.</p><div className="mt-2 flex gap-2"><button disabled={busy} onClick={() => onReviewFinancing(tramite.id, 'Rechazado')} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700 disabled:opacity-50">Financiamiento rechazado</button><button disabled={busy} onClick={() => onReviewFinancing(tramite.id, 'Aprobado')} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">Financiamiento aprobado</button></div></div>}
+    <div className="flex flex-wrap items-start justify-between gap-2"><div><h4 className="font-bold">{tramite.propiedad?.titulo}</h4><p className="mt-1 text-xs text-slate-500">{tramite.comprador?.nombre} · {tramite.metodoPago || 'Pendiente de método de pago'}</p></div><StatusBadge status={tramite.estadoDocumentacion} /></div>
+    <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2"><span>Documentación: <b>{tramite.estadoDocumentacion}</b></span><span>Financiamiento: <b>{tramite.estadoFinanciamiento}</b></span></div>
+    {tramite.estadoDocumentacion !== 'Aprobado' && <p className="mt-3 text-xs text-amber-800">Podrás programar la firma cuando Responsable Legal apruebe la documentación.</p>}
+    {CREDIT_PURCHASE_METHODS.includes(tramite.metodoPago) && tramite.estadoFinanciamiento === 'Pendiente' && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-xs text-amber-900">Primero registra la respuesta de {tramite.metodoPago} en Seguimiento de financiamientos.</p>}
     {tramite.estadoFinanciamiento === 'Rechazado' && <p className="mt-3 text-xs font-semibold text-rose-700">El financiamiento fue rechazado; no se puede programar la firma.</p>}
-    {canSchedule && <form onSubmit={(event) => { event.preventDefault(); onScheduleSigning(tramite.id, { notaria, fechaFirma, horaFirma }); }} className="mt-4 grid gap-3 sm:grid-cols-3">
+    {signatureState === 'Firmada' && <p className="mt-3 rounded-xl bg-emerald-50 p-3 text-xs font-semibold text-emerald-800">Firma realizada el {new Date(`${tramite.fechaResultadoFirma}T00:00:00`).toLocaleDateString('es-MX')}.</p>}
+    {signatureState === 'No realizada' && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-xs text-amber-900">Último resultado: no se firmó el {new Date(`${tramite.fechaResultadoFirma}T00:00:00`).toLocaleDateString('es-MX')}. Puedes reprogramar la cita.</p>}
+    {canSchedule && signatureState !== 'Firmada' && <form onSubmit={(event) => { event.preventDefault(); onScheduleSigning(tramite.id, { notaria, fechaFirma, horaFirma }); }} className="mt-4 grid gap-3 sm:grid-cols-3">
       <label className="form-label">Notaría<input className="form-input mt-2" value={notaria} onChange={(event) => setNotaria(event.target.value)} maxLength="180" required /></label>
-      <label className="form-label">Fecha de firma<input className="form-input mt-2" type="date" min={new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)} value={fechaFirma} onChange={(event) => setFechaFirma(event.target.value)} required /></label>
+      <label className="form-label">Fecha de firma<input className="form-input mt-2" type="date" min={today} value={fechaFirma} onChange={(event) => setFechaFirma(event.target.value)} required /></label>
       <label className="form-label">Hora<input className="form-input mt-2" type="time" value={horaFirma} onChange={(event) => setHoraFirma(event.target.value)} required /></label>
       <button disabled={busy} className="rounded-xl bg-cyan-800 px-4 py-3 text-xs font-bold text-white hover:bg-cyan-900 disabled:opacity-50 sm:col-span-3">{busy ? 'Guardando…' : tramite.fechaFirma ? 'Actualizar cita de firma' : 'Programar firma en notaría'}</button>
     </form>}
     {tramite.fechaFirma && <p className="mt-3 text-xs font-semibold text-emerald-800">Firma programada: {tramite.notaria} · {new Date(`${tramite.fechaFirma}T00:00:00`).toLocaleDateString('es-MX')} · {tramite.horaFirma}</p>}
+    {canSchedule && signatureState !== 'Firmada' && (appointmentPassed
+      ? <form onSubmit={(event) => { event.preventDefault(); onRecordSigningOutcome(tramite.id, { estadoFirma: resultadoFirma, fechaResultadoFirma }); }} className="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+        <label className="form-label">Resultado de la cita<select className="form-input mt-2" value={resultadoFirma} onChange={(event) => setResultadoFirma(event.target.value)} required><option value="">Selecciona el resultado</option><option value="Firmada">La firma se realizó</option><option value="No realizada">No se realizó</option></select></label>
+        <label className="form-label">Fecha del resultado<input className="form-input mt-2" type="date" min={tramite.fechaFirma} max={today} value={fechaResultadoFirma} onChange={(event) => setFechaResultadoFirma(event.target.value)} required /></label>
+        <button disabled={busy} className="rounded-xl bg-emerald-700 px-4 py-3 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-50">{busy ? 'Guardando…' : 'Registrar resultado'}</button>
+      </form>
+      : tramite.fechaFirma && signatureState !== 'Firmada' && <p className="mt-3 text-xs text-slate-500">Podrás registrar el resultado después de la fecha de la cita.</p>)}
   </article>;
 }
 
-function ManagerPurchaseWorkflow({ tramites, onViewDocuments, onReviewDocuments, onReviewFinancing, onScheduleSigning, busy }) {
+function AdvisorSigningWorkflow({ tramites, onScheduleSigning, onRecordSigningOutcome, busy }) {
   const cases = tramites.filter((item) => item.estado === 'Aprobado');
   return <section className="rounded-2xl border border-slate-200 bg-white p-5">
-    <h2 className="font-extrabold">Expediente del comprador y escrituración</h2>
-    <p className="mt-1 text-xs text-slate-500">Revisa los documentos, registra la respuesta del financiamiento y programa la firma cuando los requisitos estén aprobados.</p>
-    {cases.length ? <div className="mt-4 space-y-3">{cases.map((tramite) => <ManagerPurchaseCard key={tramite.id} tramite={tramite} onViewDocuments={onViewDocuments} onReviewDocuments={onReviewDocuments} onReviewFinancing={onReviewFinancing} onScheduleSigning={onScheduleSigning} busy={busy} />)}</div> : <p className="mt-4 text-sm text-slate-500">Los apartados aparecerán aquí después de validar el anticipo.</p>}
+    <h2 className="font-extrabold">Programación de firma en notaría</h2>
+    <p className="mt-1 text-xs text-slate-500">Programa la cita de los apartados que tienes asignados cuando la documentación y, si aplica, el financiamiento estén aprobados.</p>
+    {cases.length ? <div className="mt-4 space-y-3">{cases.map((tramite) => <AdvisorSigningCard key={tramite.id} tramite={tramite} onScheduleSigning={onScheduleSigning} onRecordSigningOutcome={onRecordSigningOutcome} busy={busy} />)}</div> : <p className="mt-4 text-sm text-slate-500">Tus apartados aparecerán aquí después de validar el anticipo.</p>}
   </section>;
+}
+
+function AdvisorFinancingWorkflow({ tramites, onReviewFinancing, busy }) {
+  const cases = tramites.filter((item) => item.estado === 'Aprobado' && CREDIT_PURCHASE_METHODS.includes(item.metodoPago));
+  return <section className="rounded-2xl border border-slate-200 bg-white p-5">
+    <h2 className="font-extrabold">Seguimiento de financiamientos</h2>
+    <p className="mt-1 text-xs text-slate-500">Registra la respuesta de la institución cuando el Responsable Legal haya aprobado la documentación.</p>
+    {cases.length ? <div className="mt-4 space-y-3">{cases.map((tramite) => <article key={tramite.id} className="rounded-xl border border-slate-200 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2"><div><h3 className="font-bold">{tramite.propiedad?.titulo}</h3><p className="mt-1 text-xs text-slate-500">{tramite.comprador?.nombre} · {tramite.metodoPago}</p></div><StatusBadge status={tramite.estadoFinanciamiento} /></div>
+      {tramite.estadoFinanciamiento === 'Pendiente' && tramite.estadoDocumentacion !== 'Aprobado'
+        ? <p className="mt-3 text-xs text-amber-800">Disponible después de que Responsable Legal apruebe los documentos: {tramite.estadoDocumentacion}.</p>
+        : tramite.estadoFinanciamiento === 'Pendiente'
+          ? <div className="mt-3 rounded-xl bg-cyan-50 p-3"><p className="text-xs text-cyan-950">Cuando tengas la respuesta de {tramite.metodoPago}, regístrala aquí. CASAFAST no consulta automáticamente a la institución.</p><div className="mt-2 flex gap-2"><button disabled={busy} onClick={() => onReviewFinancing(tramite.id, 'Rechazado')} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700 disabled:opacity-50">Financiamiento rechazado</button><button disabled={busy} onClick={() => onReviewFinancing(tramite.id, 'Aprobado')} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">Financiamiento aprobado</button></div></div>
+          : <p className={`mt-3 text-xs font-semibold ${tramite.estadoFinanciamiento === 'Aprobado' ? 'text-emerald-700' : 'text-rose-700'}`}>Respuesta registrada por el asesor: {tramite.estadoFinanciamiento}.</p>}
+    </article>)}</div> : <p className="mt-4 text-sm text-slate-500">No tienes apartados asignados que requieran financiamiento.</p>}
+  </section>;
+}
+
+function LegalBuyerDocumentsWorkflow({ tramites, onViewDocuments, onReviewDocuments, busy }) {
+  return <section className="rounded-2xl border border-slate-200 bg-white p-5">
+    <h2 className="font-extrabold">Revisión de documentos del comprador</h2>
+    <p className="mt-1 text-xs text-slate-500">Revisa la identificación oficial y el expediente financiero. Las observaciones se envían al comprador desde CASAFAST.</p>
+    {tramites.length ? <div className="mt-4 space-y-3">{tramites.map((tramite) => <LegalBuyerDocumentsCard key={tramite.id} tramite={tramite} onViewDocuments={onViewDocuments} onReviewDocuments={onReviewDocuments} busy={busy} />)}</div> : <p className="mt-4 text-sm text-slate-500">No hay documentos de compradores pendientes de revisión.</p>}
+  </section>;
+}
+
+function LegalBuyerDocumentsCard({ tramite, onViewDocuments, onReviewDocuments, busy }) {
+  const [comments, setComments] = useState('');
+  const docs = tramite.documentosComprador || [];
+  const reviewDocuments = (decision) => onReviewDocuments(tramite.id, { decision, comentarios: comments });
+  return <article className="rounded-xl border border-slate-200 p-4">
+    <div className="flex flex-wrap items-start justify-between gap-2"><div><h3 className="font-bold">{tramite.propiedad?.titulo}</h3><p className="mt-1 text-xs text-slate-500">{tramite.comprador?.nombre} · {docs.length} documentos pendientes</p></div><StatusBadge status={tramite.estadoDocumentacion} /></div>
+    <button onClick={() => onViewDocuments(tramite.id)} className="mt-3 text-xs font-bold text-cyan-800 hover:underline">Abrir identificación y documentos financieros</button>
+    <div className="mt-3 space-y-2"><textarea className="form-input" placeholder="Comentarios para el comprador (obligatorios si observas)" maxLength="1000" rows="2" value={comments} onChange={(event) => setComments(event.target.value)} /><div className="flex flex-wrap gap-2"><button disabled={busy} onClick={() => reviewDocuments('Observado')} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700 disabled:opacity-50">Observar documentos</button><button disabled={busy} onClick={() => reviewDocuments('Aprobado')} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">Aprobar documentos</button></div></div>
+  </article>;
 }
 
 function ManagerReservationApprovals({ approvals, onAction, onViewReceipt, busy }) {
   return <section className="rounded-2xl border border-slate-200 bg-white p-5">
-    <div className="mb-4 flex items-center justify-between"><div><h2 className="font-extrabold">Validación del apartado</h2><p className="mt-1 text-xs text-slate-500">Verifica el comprobante cargado por el asesor antes de aprobar el pago.</p></div><span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800">{approvals.length} pendientes</span></div>
-    {approvals.length ? <div className="space-y-3">{approvals.map((item) => <article key={item.id} className="flex flex-col gap-4 rounded-2xl border border-slate-200 p-4 sm:flex-row sm:items-center"><div className="min-w-0 flex-1"><div className="text-sm font-extrabold">{item.propiedad?.titulo}</div><div className="mt-1 text-xs text-slate-500">{item.propiedad?.zona} · {item.nombreComprador || item.comprador?.nombre} · Anticipo {money(item.montoApartado)}</div><div className="mt-2 grid gap-1 text-xs text-slate-600 sm:grid-cols-2"><span>Propuesta: <b>{item.propuestaEconomica ? money(item.propuestaEconomica) : 'No capturada'}</b></span><span>Correo: {item.correoComprador || 'No capturado'}</span><span>Teléfono: {item.telefonoComprador || 'No capturado'}</span><span>Comprobante: <b>{item.comprobanteRecibido ? 'Cargado por el asesor' : 'Pendiente del asesor'}</b></span></div>{item.comprobanteRecibido && <button onClick={() => onViewReceipt(item.id)} className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-cyan-800 hover:underline"><FileText size={14} /> Ver comprobante ({item.comprobanteNombre})</button>}</div><div className="flex gap-2"><button disabled={busy} onClick={() => onAction(item.propiedadCodigo, 'rechazar')} className="rounded-xl border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-50">Rechazar</button><button disabled={busy || !item.comprobanteRecibido} onClick={() => onAction(item.propiedadCodigo, 'aprobar')} className="rounded-xl bg-emerald-700 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-50">Validar y apartar</button></div></article>)}</div> : <EmptyState text="No hay apartados pendientes de validación." />}
+    <div className="mb-4 flex items-center justify-between"><div><h2 className="font-extrabold">Validación del apartado</h2><p className="mt-1 text-xs text-slate-500">Verifica el comprobante del anticipo y que el dictamen legal esté aprobado para notaría.</p></div><span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800">{approvals.length} pendientes</span></div>
+    {approvals.length ? <div className="space-y-3">{approvals.map((item) => {
+      const legalApproved = item.propiedad?.expedienteLegal?.estatusDictamenGeneral === 'Aprobado para Notaría';
+      return <article key={item.id} className="flex flex-col gap-4 rounded-2xl border border-slate-200 p-4 sm:flex-row sm:items-center"><div className="min-w-0 flex-1"><div className="text-sm font-extrabold">{item.propiedad?.titulo}</div><div className="mt-1 text-xs text-slate-500">{item.propiedad?.zona} · {item.nombreComprador || item.comprador?.nombre} · Anticipo {money(item.montoApartado)}</div><div className="mt-2 grid gap-1 text-xs text-slate-600 sm:grid-cols-2"><span>Propuesta: <b>{item.propuestaEconomica ? money(item.propuestaEconomica) : 'No capturada'}</b></span><span>Correo: {item.correoComprador || 'No capturado'}</span><span>Teléfono: {item.telefonoComprador || 'No capturado'}</span><span>Comprobante: <b>{item.comprobanteRecibido ? 'Cargado por el asesor' : 'Pendiente del asesor'}</b></span><span>Dictamen legal: <b>{item.propiedad?.expedienteLegal?.estatusDictamenGeneral || 'En Auditoría'}</b></span></div>{item.comprobanteRecibido && <button onClick={() => onViewReceipt(item.id)} className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-cyan-800 hover:underline"><FileText size={14} /> Ver comprobante ({item.comprobanteNombre})</button>}{!legalApproved && <p className="mt-2 text-xs font-semibold text-amber-700">El responsable legal debe aprobar el expediente para notaría antes de validar el apartado.</p>}</div><div className="flex gap-2"><button disabled={busy} onClick={() => onAction(item.propiedadCodigo, 'rechazar')} className="rounded-xl border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-50">Rechazar</button><button disabled={busy || !item.comprobanteRecibido || !legalApproved} onClick={() => onAction(item.propiedadCodigo, 'aprobar')} className="rounded-xl bg-emerald-700 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-50">Validar anticipo y apartar</button></div></article>;
+    })}</div> : <EmptyState text="No hay apartados pendientes de validación." />}
   </section>;
 }
 
@@ -606,7 +696,7 @@ function ManagerSalesDashboard({ requests, advisors, onAssign }) {
   </div>;
 }
 
-function LegalReviewDashboard({ expedientes, onReview, loading }) {
+function LegalReviewDashboard({ expedientes, buyerDocuments, onReview, onViewBuyerDocuments, onReviewBuyerDocuments, busy, loading }) {
   const pending = expedientes.filter((item) => item.estatusDictamenGeneral === 'En Auditoría').length;
   const approved = expedientes.filter((item) => item.estatusDictamenGeneral === 'Aprobado para Notaría').length;
   return <div className="space-y-6">
@@ -620,6 +710,7 @@ function LegalReviewDashboard({ expedientes, onReview, loading }) {
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-slate-500">Estado de cuenta catastral: {item.documentos?.predial || 'No cargado'}{item.documentos?.predial && !item.documentos.predialOficialPdf ? ' · requiere PDF oficial' : ''}</p><button onClick={() => onReview(item)} className="rounded-xl bg-cyan-800 px-4 py-2 text-xs font-bold text-white hover:bg-cyan-900">Abrir expediente y dictaminar</button></div>
       {item.comentariosJuridicos && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-900">{item.comentariosJuridicos}</p>}
     </article>)}</div> : <EmptyState text="No hay expedientes pendientes. Cuando un asesor complete la inspección de una propiedad, aparecerá aquí." />}
+    <LegalBuyerDocumentsWorkflow tramites={buyerDocuments} onViewDocuments={onViewBuyerDocuments} onReviewDocuments={onReviewBuyerDocuments} busy={busy} />
   </div>;
 }
 
@@ -715,7 +806,119 @@ function AdvisorPropertyPortfolio({ properties }) {
   </section>;
 }
 
-function Dashboard({ user, properties, advisorProperties = [], tramites, solicitudesVenta, advisorRequests = [], propertyVisits, onAction, onBrowse, onSell, onViewFiles, onInspect, onUpdateVisit, onDismissVisit, onReserve, onUploadReservationReceipt, onViewReceipt, onChoosePayment, onUploadBuyerDocuments, onViewBuyerDocuments, onReviewBuyerDocuments, onReviewFinancing, onScheduleSigning, busy }) {
+function ChatPage({ token, user }) {
+  const [conversations, setConversations] = useState([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [draft, setDraft] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    let active = true;
+    const loadConversations = async () => {
+      try {
+        const data = await request('/chat/conversaciones', { token });
+        if (!active) return;
+        setConversations(data);
+        setSelectedId((current) => data.some((conversation) => conversation.id === current) ? current : data[0]?.id || '');
+        setError('');
+      } catch (loadError) {
+        if (active) setError(loadError.message);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    loadConversations();
+    const interval = window.setInterval(loadConversations, 5000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [token]);
+
+  useEffect(() => {
+    let active = true;
+    if (!selectedId) return () => { active = false; };
+    const loadMessages = async () => {
+      try {
+        const data = await request(`/chat/conversaciones/${selectedId}/mensajes`, { token });
+        if (active) {
+          setMessages(data);
+          setError('');
+        }
+      } catch (loadError) {
+        if (active) setError(loadError.message);
+      }
+    };
+    loadMessages();
+    const interval = window.setInterval(loadMessages, 3000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [token, selectedId]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const selectedConversation = conversations.find((conversation) => conversation.id === selectedId);
+  const sendMessage = async (event) => {
+    event.preventDefault();
+    if (!draft.trim() || !selectedId || sending) return;
+    setSending(true);
+    setError('');
+    try {
+      const message = await request(`/chat/conversaciones/${selectedId}/mensajes`, {
+        method: 'POST',
+        token,
+        body: JSON.stringify({ texto: draft }),
+      });
+      setMessages((current) => current.some((item) => item.id === message.id) ? current : [...current, message]);
+      setDraft('');
+    } catch (sendError) {
+      setError(sendError.message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return <section className="grid min-h-[65vh] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm md:grid-cols-[300px_minmax(0,1fr)]">
+    <aside className="border-b border-slate-200 md:border-b-0 md:border-r">
+      <div className="border-b border-slate-100 p-4"><h2 className="font-extrabold">Conversaciones</h2><p className="mt-1 text-xs text-slate-500">Mensajes directos con tu asesor o cliente.</p></div>
+      {loading && !conversations.length ? <p className="p-4 text-sm text-slate-500">Cargando conversaciones…</p>
+        : conversations.length ? <div className="max-h-64 overflow-y-auto md:max-h-[65vh]">{conversations.map((conversation) => {
+          const otherParticipant = user.rol === 'asesor' ? conversation.cliente : conversation.asesor;
+          return <button key={conversation.id} onClick={() => { if (selectedId !== conversation.id) { setMessages([]); setSelectedId(conversation.id); } }} className={`block w-full border-b border-slate-100 p-4 text-left transition hover:bg-slate-50 ${selectedId === conversation.id ? 'bg-cyan-50' : ''}`}>
+            <div className="flex items-center justify-between gap-2"><span className="truncate text-sm font-bold text-slate-900">{otherParticipant?.nombre || 'Usuario'}</span><span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">{conversation.tipo === 'vendedor' ? 'Venta / renta' : 'Compra'}</span></div>
+            <p className="mt-1 truncate text-xs text-slate-500">{conversation.titulo}</p>
+            <p className="mt-2 truncate text-xs text-slate-400">{conversation.ultimoMensaje?.texto || 'Inicia la conversación'}</p>
+          </button>;
+        })}</div>
+          : <p className="p-4 text-sm leading-6 text-slate-500">Aún no tienes conversaciones. Aparecerán cuando asignen un asesor a tu solicitud de venta o agendes una visita o apartado para una propiedad.</p>}
+    </aside>
+    <div className="flex min-h-[420px] flex-col">
+      {selectedConversation ? <>
+        <div className="border-b border-slate-100 px-4 py-3"><h2 className="font-extrabold">{user.rol === 'asesor' ? selectedConversation.cliente?.nombre : selectedConversation.asesor?.nombre}</h2><p className="mt-1 text-xs text-slate-500">{selectedConversation.titulo}</p></div>
+        <div className="flex-1 space-y-3 overflow-y-auto p-4">
+          {messages.map((message) => <div key={message.id} className={`flex ${message.remitenteId === user.id ? 'justify-end' : 'justify-start'}`}><div className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 ${message.remitenteId === user.id ? 'bg-cyan-800 text-white' : 'bg-slate-100 text-slate-900'}`}><p className="whitespace-pre-wrap break-words text-sm">{message.texto}</p><p className={`mt-1 text-right text-[10px] ${message.remitenteId === user.id ? 'text-cyan-100' : 'text-slate-500'}`}>{new Intl.DateTimeFormat('es-MX', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' }).format(new Date(message.createdAt))}</p></div></div>)}
+          {!messages.length && <p className="py-8 text-center text-sm text-slate-400">Escribe el primer mensaje para iniciar el chat.</p>}
+          <div ref={messagesEndRef} />
+        </div>
+        <form onSubmit={sendMessage} className="flex items-end gap-2 border-t border-slate-100 p-3">
+          <textarea aria-label="Escribe un mensaje" className="form-input min-h-11 resize-y" rows={1} maxLength={2000} placeholder="Escribe un mensaje…" value={draft} onChange={(event) => setDraft(event.target.value)} />
+          <button type="submit" disabled={!draft.trim() || sending} aria-label="Enviar mensaje" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-cyan-800 text-white transition hover:bg-cyan-900 disabled:cursor-not-allowed disabled:opacity-50"><Send size={17} /></button>
+        </form>
+      </> : <div className="flex flex-1 flex-col items-center justify-center p-8 text-center text-slate-400"><MessageCircle size={34} /><p className="mt-3 text-sm">{loading ? 'Cargando chat…' : 'Selecciona una conversación para enviar mensajes.'}</p></div>}
+      {error && <p role="alert" className="border-t border-rose-100 bg-rose-50 px-4 py-2 text-xs text-rose-700">{error}</p>}
+    </div>
+  </section>;
+}
+
+function Dashboard({ user, properties, advisorProperties = [], tramites, solicitudesVenta, advisorRequests = [], propertyVisits, onAction, onBrowse, onSell, onViewFiles, onInspect, onUpdateVisit, onDismissVisit, onReserve, onUploadReservationReceipt, onViewReceipt, onChoosePayment, onUploadBuyerDocuments, onViewBuyerDocuments, onReviewFinancing, onScheduleSigning, onRecordSigningOutcome, busy }) {
   const ownProperties = properties.filter((property) => property.propietarioId === user.id);
   const approvals = tramites.filter((item) => item.estado === 'Pendiente Aprobación');
   const myTramites = tramites.filter((item) => item.compradorId === user.id);
@@ -761,12 +964,11 @@ function Dashboard({ user, properties, advisorProperties = [], tramites, solicit
     const pending = tramites.filter((item) => item.estado === 'Pendiente Aprobación').length;
     const value = advisorProperties.filter((item) => item.tipoOperacion !== 'Renta').reduce((sum, item) => sum + Number(item.precio), 0);
     const appointments = propertyVisits.filter((item) => item.estado !== 'Rechazada' && !item.clienteDescarto).length + advisorRequests.filter((item) => item.estado === 'Asignada').length;
-    return <div className="space-y-6"><div><h2 className="text-xl font-black text-slate-950">Panel de Inicio del Asesor Inmobiliario</h2><p className="mt-1 text-sm text-slate-500">Gestiona tu agenda, las captaciones, los anticipos y el estatus de tus propiedades.</p></div><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><Stat icon={Building2} label="Propiedades asignadas" value={advisorProperties.length} /><Stat icon={CalendarDays} label="Citas en agenda" value={appointments} color="violet" /><Stat icon={Wallet} label="Comisión estimada" value={money(value * 0.03)} note="Estimación demostrativa al 3% en ventas" color="emerald" /><Stat icon={Clock3} label="Apartados por aprobar" value={pending} color="amber" /></div><AdvisorAgenda visits={propertyVisits} requests={advisorRequests} onInspect={onInspect} onViewFiles={onViewFiles} onUpdateVisit={onUpdateVisit} busy={busy} /><AdvisorReservationQueue tramites={tramites} onUpload={onUploadReservationReceipt} onView={onViewReceipt} busy={busy} /><AdvisorPropertyPortfolio properties={advisorProperties} /></div>;
+    return <div className="space-y-6"><div><h2 className="text-xl font-black text-slate-950">Panel de Inicio del Asesor Inmobiliario</h2><p className="mt-1 text-sm text-slate-500">Gestiona tu agenda, las captaciones, los anticipos y el estatus de tus propiedades.</p></div><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><Stat icon={Building2} label="Propiedades asignadas" value={advisorProperties.length} /><Stat icon={CalendarDays} label="Citas en agenda" value={appointments} color="violet" /><Stat icon={Wallet} label="Comisión estimada" value={money(value * 0.03)} note="Estimación demostrativa al 3% en ventas" color="emerald" /><Stat icon={Clock3} label="Apartados por aprobar" value={pending} color="amber" /></div><AdvisorAgenda visits={propertyVisits} requests={advisorRequests} onInspect={onInspect} onViewFiles={onViewFiles} onUpdateVisit={onUpdateVisit} busy={busy} /><AdvisorReservationQueue tramites={tramites} onUpload={onUploadReservationReceipt} onView={onViewReceipt} busy={busy} /><AdvisorFinancingWorkflow tramites={tramites} onReviewFinancing={onReviewFinancing} busy={busy} /><AdvisorSigningWorkflow tramites={tramites} onScheduleSigning={onScheduleSigning} onRecordSigningOutcome={onRecordSigningOutcome} busy={busy} /><AdvisorPropertyPortfolio properties={advisorProperties} /></div>;
   }
   return <div className="space-y-6">
     <div className="grid gap-4 sm:grid-cols-3"><Stat icon={Clock3} label="Solicitudes pendientes" value={approvals.length} color="amber" /><Stat icon={BadgeCheck} label="Apartados aprobados" value={tramites.filter((item) => item.estado === 'Aprobado').length} color="emerald" /><Stat icon={Building2} label="Inventario" value={properties.length} /></div>
     <ManagerReservationApprovals approvals={approvals} onAction={onAction} onViewReceipt={onViewReceipt} busy={busy} />
-    <ManagerPurchaseWorkflow tramites={tramites} onViewDocuments={onViewBuyerDocuments} onReviewDocuments={onReviewBuyerDocuments} onReviewFinancing={onReviewFinancing} onScheduleSigning={onScheduleSigning} busy={busy} />
   </div>;
 }
 
@@ -808,7 +1010,7 @@ export default function App() {
       const [propertyData, advisorPropertyData, tramiteData, salesData, visitData, legalData] = await Promise.all([
         request('/propiedades', { token: activeToken }),
         user?.rol === 'asesor' ? request('/asesor/propiedades', { token: activeToken }) : Promise.resolve([]),
-        user?.rol === 'responsable_legal' ? Promise.resolve([]) : request('/tramites', { token: activeToken }),
+        request('/tramites', { token: activeToken }),
         user?.rol === 'responsable_legal' ? Promise.resolve([]) : request('/solicitudes-venta', { token: activeToken }),
         ['cliente', 'asesor'].includes(user?.rol) ? request('/visitas', { token: activeToken }) : Promise.resolve([]),
         user?.rol === 'responsable_legal' ? request('/expedientes-legales', { token: activeToken }) : Promise.resolve([]),
@@ -828,7 +1030,10 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return;
-    request('/me', { token }).then(({ usuario }) => setUser(usuario)).catch(() => {
+    request('/me', { token }).then(({ usuario }) => {
+      setUser(usuario);
+      setView(usuario.rol === 'cliente' ? 'catalog' : 'dashboard');
+    }).catch(() => {
       localStorage.removeItem('casafast-token');
       setToken('');
     });
@@ -854,7 +1059,7 @@ export default function App() {
     try {
       const data = await request('/login', { method: 'POST', body: JSON.stringify({ email, password }) });
       localStorage.setItem('casafast-token', data.token);
-      setToken(data.token); setUser(data.usuario); setView('dashboard');
+      setToken(data.token); setUser(data.usuario); setView(data.usuario.rol === 'cliente' ? 'catalog' : 'dashboard');
       notify(`Sesión iniciada como ${ROLE_INFO[data.usuario.rol].title}.`);
     } catch (error) { setLoginError(error.message); }
     finally { setBusy(false); }
@@ -915,6 +1120,12 @@ export default function App() {
   const reviewBuyerDocuments = (id, data) => updatePurchaseStep(id, 'documentos/revision', data, data.decision === 'Aprobado' ? 'Documentación aprobada.' : 'Se registraron observaciones para el comprador.');
   const reviewFinancing = (id, estadoFinanciamiento) => updatePurchaseStep(id, 'financiamiento', { estadoFinanciamiento }, 'Resultado de financiamiento actualizado.');
   const scheduleSigning = (id, data) => updatePurchaseStep(id, 'firma', data, 'Firma en notaría programada.');
+  const recordSigningOutcome = (id, data) => updatePurchaseStep(
+    id,
+    'resultado-firma',
+    data,
+    data.estadoFirma === 'Firmada' ? 'Firma realizada registrada.' : 'Se registró que la firma no se realizó.',
+  );
 
   const openPropertyDetails = async (property) => {
     setModal({ type: 'propertyDetail', property, loading: true });
@@ -1084,6 +1295,7 @@ export default function App() {
         {!['gerente', 'responsable_legal'].includes(user.rol) && <nav className="hidden items-center gap-1 md:flex">
           <button onClick={() => setView('dashboard')} className={`nav-link ${view === 'dashboard' ? 'nav-active' : ''}`}><LayoutDashboard size={16} /> Mi panel</button>
           <button onClick={() => setView('catalog')} className={`nav-link ${view === 'catalog' ? 'nav-active' : ''}`}><Search size={16} /> Propiedades</button>
+          <button onClick={() => setView('chat')} className={`nav-link ${view === 'chat' ? 'nav-active' : ''}`}><MessageCircle size={16} /> Chat</button>
         </nav>}
         <div className="flex items-center gap-2 sm:gap-3">
           <span className={`hidden rounded-full px-3 py-1.5 text-[11px] font-bold sm:inline-flex ${role.color}`}>{role.title}</span>
@@ -1091,14 +1303,17 @@ export default function App() {
           <button onClick={logout} title="Cerrar sesión" className="rounded-xl border border-slate-200 p-2.5 text-slate-600 hover:bg-slate-50"><LogOut size={17} /></button>
         </div>
       </div>
-      {!['gerente', 'responsable_legal'].includes(user.rol) && <div className="flex border-t border-slate-100 px-4 py-2 md:hidden"><button onClick={() => setView('dashboard')} className={`nav-link flex-1 justify-center ${view === 'dashboard' ? 'nav-active' : ''}`}>Mi panel</button><button onClick={() => setView('catalog')} className={`nav-link flex-1 justify-center ${view === 'catalog' ? 'nav-active' : ''}`}>Propiedades</button></div>}
+      {!['gerente', 'responsable_legal'].includes(user.rol) && <div className="flex border-t border-slate-100 px-4 py-2 md:hidden"><button onClick={() => setView('dashboard')} className={`nav-link flex-1 justify-center ${view === 'dashboard' ? 'nav-active' : ''}`}>Mi panel</button><button onClick={() => setView('catalog')} className={`nav-link flex-1 justify-center ${view === 'catalog' ? 'nav-active' : ''}`}>Propiedades</button><button onClick={() => setView('chat')} className={`nav-link flex-1 justify-center ${view === 'chat' ? 'nav-active' : ''}`}>Chat</button></div>}
     </header>
     <main className="mx-auto max-w-7xl space-y-7 px-4 py-7 sm:px-7 sm:py-9">
-      <section className="flex flex-wrap items-end justify-between gap-4"><div><div className="text-xs font-bold uppercase tracking-[.18em] text-cyan-800">Sucursal Culiacán Tres Ríos</div><h1 className="mt-2 text-2xl font-black tracking-tight sm:text-3xl">{view === 'catalog' ? 'Catálogo de propiedades' : `Hola, ${user.nombre.split(' ')[0]}`}</h1><p className="mt-1 text-sm text-slate-500">{view === 'catalog' ? 'Encuentra propiedades en venta o renta en Culiacán.' : user.rol === 'gerente' ? 'Administra solicitudes de venta y renta y asigna las visitas a los asesores.' : user.rol === 'responsable_legal' ? 'Audita los expedientes fiscales y jurídicos de los inmuebles.' : 'Aquí tienes un resumen actualizado de tu actividad.'}</p></div></section>
+      <section className="flex flex-wrap items-end justify-between gap-4"><div><div className="text-xs font-bold uppercase tracking-[.18em] text-cyan-800">Sucursal Culiacán Tres Ríos</div><h1 className="mt-2 text-2xl font-black tracking-tight sm:text-3xl">{view === 'catalog' ? 'Catálogo de propiedades' : view === 'chat' ? 'Chat con tu equipo' : `Hola, ${user.nombre.split(' ')[0]}`}</h1><p className="mt-1 text-sm text-slate-500">{view === 'catalog' ? 'Encuentra propiedades en venta o renta en Culiacán.' : view === 'chat' ? 'Comunícate directamente con el cliente o asesor asignado.' : user.rol === 'gerente' ? 'Administra solicitudes de venta y renta y asigna las visitas a los asesores.' : user.rol === 'responsable_legal' ? 'Audita los expedientes fiscales y jurídicos de los inmuebles.' : 'Aquí tienes un resumen actualizado de tu actividad.'}</p></div></section>
       {view === 'dashboard' && user.rol === 'gerente'
-        ? <ManagerSalesDashboard requests={solicitudesVenta} advisors={advisors} onAssign={assignSaleRequest} />
+        ? <div className="space-y-6">
+          <ManagerSalesDashboard requests={solicitudesVenta} advisors={advisors} onAssign={assignSaleRequest} />
+          <ManagerReservationApprovals approvals={tramites.filter((item) => item.estado === 'Pendiente Aprobación')} onAction={actOnReservation} onViewReceipt={openReservationReceipt} busy={busy} />
+        </div>
         : view === 'dashboard' && user.rol === 'responsable_legal'
-          ? <LegalReviewDashboard expedientes={legalExpedientes} loading={legalLoading} onReview={openLegalReview} />
+         ? <LegalReviewDashboard expedientes={legalExpedientes} buyerDocuments={tramites} loading={legalLoading} onReview={openLegalReview} onViewBuyerDocuments={openBuyerDocuments} onReviewBuyerDocuments={reviewBuyerDocuments} busy={busy} />
         : view === 'dashboard'
           ? <Dashboard
             user={user}
@@ -1121,12 +1336,12 @@ export default function App() {
             onChoosePayment={choosePurchaseMethod}
             onUploadBuyerDocuments={uploadBuyerDocuments}
             onViewBuyerDocuments={openBuyerDocuments}
-            onReviewBuyerDocuments={reviewBuyerDocuments}
             onReviewFinancing={reviewFinancing}
             onScheduleSigning={scheduleSigning}
+            onRecordSigningOutcome={recordSigningOutcome}
             busy={busy}
           />
-          : <section>
+          : view === 'catalog' ? <section>
             <div className="mb-5 flex flex-col gap-3 sm:flex-row">
               <label className="relative flex-1"><Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} /><input className="form-input pl-10" placeholder="Buscar por zona, nombre o dirección…" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
               <select aria-label="Filtrar por operación" className="form-input sm:w-44" value={operationFilter} onChange={(event) => setOperationFilter(event.target.value)}><option value="Todas">Venta y renta</option><option value="Venta">Venta</option><option value="Renta">Renta</option></select>
@@ -1134,7 +1349,7 @@ export default function App() {
             </div>
             {visibleProperties.length ? <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">{visibleProperties.map((property) => <PropertyCard key={property.codigo} property={property} onDetails={openPropertyDetails} onSchedule={(item) => setModal({ type: 'propertyVisit', property: item })} onReserve={(item) => setModal({ type: 'reserve', property: item })} reserveDisabled={user.rol !== 'cliente'} />)}</div> : <EmptyState text="No encontramos propiedades con esos términos." />}
             {user.rol !== 'cliente' && <p className="mt-4 text-xs text-slate-500">Las visitas pueden agendarse desde el detalle; los apartados en línea son solo para propiedades en venta y clientes.</p>}
-          </section>}
+          </section> : <ChatPage token={token} user={user} />}
     </main>
     <footer className="mt-12 border-t border-slate-200 bg-white py-6 text-center text-xs text-slate-500">© 2026 CASAFAST · Plataforma inmobiliaria</footer>
     {modal === 'sell' && <SellAppointmentModal user={user} onClose={() => setModal(null)} onSubmit={submitSaleRequest} busy={busy} />}
@@ -1144,7 +1359,8 @@ export default function App() {
     {modal?.type === 'inspection' && <InspectionModal solicitud={modal.solicitud} onClose={() => setModal(null)} onSubmit={completeSaleInspection} busy={busy} />}
     {modal?.type === 'files' && <InspectionFilesModal solicitud={modal.solicitud} files={modal.files} onClose={() => setModal(null)} />}
     {modal?.type === 'reserve' && <ReservationModal property={modal.property} user={user} onClose={() => setModal(null)} onSubmit={reserve} busy={busy} />}
-    {modal?.type === 'purchaseFiles' && <Modal title={modal.title} onClose={() => setModal(null)}><div className="space-y-2">{modal.files.map((file, index) => <a key={`${file.tipo || 'receipt'}-${file.nombre}-${index}`} href={file.data} download={file.nombre} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-xl border border-slate-200 p-3 text-xs font-semibold text-cyan-800 hover:bg-cyan-50"><FileText size={16} />{file.tipo ? `${file.tipo}: ` : ''}{file.nombre}</a>)}</div></Modal>}
+    {modal?.type === 'purchaseFiles' && <Modal title={modal.title} onClose={() => setModal(null)}><div className="space-y-2">{modal.files.map((file, index) => <button key={`${file.tipo || 'receipt'}-${file.nombre}-${index}`} type="button" onClick={() => setModal({ type: 'documentPreview', file, previous: modal })} className="flex w-full items-center gap-2 rounded-xl border border-slate-200 p-3 text-left text-xs font-semibold text-cyan-800 hover:bg-cyan-50"><FileText size={16} />{file.tipo ? `${file.tipo}: ` : ''}{file.nombre}</button>)}</div></Modal>}
+    {modal?.type === 'documentPreview' && <DocumentPreviewModal file={modal.file} onClose={() => setModal(modal.previous)} />}
     {modal?.type === 'legalReview' && <LegalReviewModal expediente={modal.expediente} onClose={() => setModal(null)} onSubmit={saveLegalReview} onOpenDocument={openLegalDocument} busy={busy} />}
     <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'success' })} />
   </div>;
